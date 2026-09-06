@@ -1,0 +1,41 @@
+WEBPARATUS DLSS5 SIDECAR V3
+========================================
+Desenvolvedor da edição Webparatus: Klede Marcos Teixeira
+Canal: Webparatus — YouTube
+
+Base técnica: dlss5-wow-sidecar v0.1.2 por xilla420.
+A licença MIT e os avisos de terceiros originais são preservados no pacote.
+
+OBJETIVO
+-------
+Executar o processamento DLSS 5 Neural Rendering FORA do processo do World of Warcraft.
+Esta edição não instala DLLs na pasta _classic_, não injeta código em WowClassic.exe e não lê memória do jogo.
+
+SISTEMAS / GPUS
+---------------
+- Windows 11: caminho suportado pela base original.
+- Windows 10 22H2 build 19045: suporte experimental Webparatus.
+- RTX 40 / RTX 50: caminho da base original.
+- RTX 20 / RTX 30: suporte experimental Webparatus e exige um nvngx_dlssnr.dll compatível com Turing/Ampere fornecido pelo usuário.
+
+RTX 3050 / RTX 20-30
+--------------------
+1. Extraia este ZIP FORA da pasta do World of Warcraft.
+   Exemplo: C:\Webparatus_DLSS5_Sidecar_V3\
+2. Execute SETUP_RTX20_30_RUNTIME.cmd.
+3. Selecione o nvngx_dlssnr.dll compatível com RTX 20/30 do seu pacote de runtime.
+4. Abra o WoW e deixe:
+   - DirectX 12
+   - Modo Janela (Tela Cheia / Borderless)
+   - Anti-Aliasing desativado no primeiro teste
+5. Execute wowsidecar-manager.exe.
+6. Confira os Checks. Em RTX 20/30, o aviso EXPERIMENTAL é esperado.
+7. Comece com o preset Most stable ou Softer. Se o desempenho for muito baixo, reduza a resolução do próprio WoW para 1600x900 ou 1280x720.
+
+IMPORTANTE
+----------
+O runtime neural modificado para RTX 20/30 NÃO é software da Webparatus e não faz parte do código MIT desta edição. O helper apenas copia um arquivo selecionado pelo próprio usuário para a pasta externa do Sidecar.
+
+Nunca copie ReShade, dxgi.dll, RenoDX ou o runtime neural para a pasta _classic_ por causa desta edição.
+
+Não existe garantia de desempenho ou compatibilidade do runtime experimental em RTX 20/30. Se a criação do recurso neural falhar, o Sidecar deve continuar em passthrough em vez de modificar o processo do jogo.
