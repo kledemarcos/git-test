@@ -19,7 +19,7 @@ function Replace-Regex([string]$Path, [string]$Pattern, [string]$Replacement) {
 }
 
 # RTX 20/30: keep upstream architecture detection, but make Turing/Ampere an
-# explicit experimental warning rather than a hard block.
+# explicit experimental warning rather than a hard block in the manager.
 $gpuPattern = '  if \(gpu->arch == GpuArch::Ada \|\| gpu->arch == GpuArch::Blackwell\) \{\s*r\.state = ProbeState::Ok;\s*return r;\s*\}\s*r\.state = ProbeState::Fail;\s*r\.remedy = "RTX 40 \(Ada\) or RTX 50 \(Blackwell\) is required\. Older cards are "\s*"refused rather than run badly\.";\s*return r;'
 $gpuReplacement = @'
   if (gpu->arch == GpuArch::Ada || gpu->arch == GpuArch::Blackwell) {
@@ -36,6 +36,32 @@ $gpuReplacement = @'
   return r;
 '@
 Replace-Regex 'src/manager/Probes.cpp' $gpuPattern $gpuReplacement
+
+# RTX 20/30 runtime startup gate: upstream has a second hard block in
+# wowsidecar.exe itself. Allow Turing/Ampere to reach the external pipeline,
+# while keeping them explicitly experimental. Unsupported/non-RTX adapters
+# remain blocked.
+$runtimeGpuPattern = '  if \(gpu->arch != GpuArch::Ada && gpu->arch != GpuArch::Blackwell\) \{\s*GlobalLog\(\)\.Error\(std::string\(ToString\(gpu->arch\)\) \+\s*" is not supported; RTX 40 or RTX 50 required"\);\s*wchar_t msg\[256\];\s*swprintf_s\(msg, L"%hs is not supported\. RTX 40 or RTX 50 required\.",\s*ToString\(gpu->arch\)\);\s*MessageBoxW\(nullptr, msg, L"DLSS 5 Sidecar", MB_ICONERROR\);\s*return 1;\s*\}'
+$runtimeGpuReplacement = @'
+  const bool supportedArch =
+      gpu->arch == GpuArch::Ada || gpu->arch == GpuArch::Blackwell ||
+      gpu->arch == GpuArch::Ampere || gpu->arch == GpuArch::Turing;
+  if (!supportedArch) {
+    GlobalLog().Error(std::string(ToString(gpu->arch)) +
+                      " is not supported; NVIDIA RTX 20/30/40/50 required");
+    wchar_t msg[256];
+    swprintf_s(msg, L"%hs is not supported. NVIDIA RTX 20/30/40/50 required.",
+               ToString(gpu->arch));
+    MessageBoxW(nullptr, msg, L"DLSS 5 Sidecar", MB_ICONERROR);
+    return 1;
+  }
+  if (gpu->arch == GpuArch::Ampere || gpu->arch == GpuArch::Turing) {
+    GlobalLog().Warn(std::string("Webparatus experimental GPU path: ") +
+                     ToString(gpu->arch) +
+                     "; neural feature creation depends on the user-supplied compatible runtime");
+  }
+'@
+Replace-Regex 'src/runtime/main.cpp' $runtimeGpuPattern $runtimeGpuReplacement
 
 # Windows 10 22H2 build 19045: allow the manager to start in experimental mode.
 $winPattern = '  r\.detail = "Build " \+ std::to_string\(info\.dwBuildNumber\);\s*if \(info\.dwBuildNumber >= 22000\) \{\s*r\.state = ProbeState::Ok;\s*return r;\s*\}\s*r\.state = ProbeState::Fail;\s*r\.remedy = "Windows 11 is required: the overlay depends on compositor "\s*"behaviour that Windows 10 does not provide\.";\s*return r;'
@@ -97,4 +123,11 @@ $manager = $manager.Replace('constexpr const char* kFirstRunTitle = "Before you 
   'constexpr const char* kFirstRunTitle = "Webparatus V3 - Klede Marcos Teixeira";')
 Write-Text $managerPath $manager
 
-Write-Host 'Webparatus V3 patches applied successfully.' -ForegroundColor Green
+# Regression guard: if the upstream hard block survives, fail the build rather
+# than shipping another package that advertises RTX 20/30 but refuses to start.
+$runtimeCheck = Read-Text 'src/runtime/main.cpp'
+if ($runtimeCheck.Contains('RTX 40 or RTX 50 required')) {
+  throw 'RTX 20/30 runtime gate was not removed.'
+}
+
+Write-Host 'Webparatus V3 patches applied successfully, including RTX 20/30 runtime gate fix.' -ForegroundColor Green
