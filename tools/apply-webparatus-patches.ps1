@@ -3,28 +3,25 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-function Replace-Exact([string]$Path, [string]$Old, [string]$New) {
-  $full = Join-Path $SourceRoot $Path
-  $text = [IO.File]::ReadAllText($full)
-  if (-not $text.Contains($Old)) { throw "Patch anchor not found in $Path" }
-  $text = $text.Replace($Old, $New)
-  [IO.File]::WriteAllText($full, $text, [Text.UTF8Encoding]::new($false))
+function Read-Text([string]$Path) {
+  [IO.File]::ReadAllText((Join-Path $SourceRoot $Path))
+}
+function Write-Text([string]$Path, [string]$Text) {
+  [IO.File]::WriteAllText((Join-Path $SourceRoot $Path), $Text, [Text.UTF8Encoding]::new($false))
   Write-Host "Patched $Path"
 }
+function Replace-Regex([string]$Path, [string]$Pattern, [string]$Replacement) {
+  $text = Read-Text $Path
+  $rx = [regex]::new($Pattern, [Text.RegularExpressions.RegexOptions]::Singleline)
+  if (-not $rx.IsMatch($text)) { throw "Patch regex not found in $Path : $Pattern" }
+  $text = $rx.Replace($text, $Replacement, 1)
+  Write-Text $Path $text
+}
 
-# 1) RTX 20/30: keep the architecture detection already present upstream, but
-# turn Turing/Ampere from a hard block into an explicit experimental warning.
-$oldGpu = @'
-  if (gpu->arch == GpuArch::Ada || gpu->arch == GpuArch::Blackwell) {
-    r.state = ProbeState::Ok;
-    return r;
-  }
-  r.state = ProbeState::Fail;
-  r.remedy = "RTX 40 (Ada) or RTX 50 (Blackwell) is required. Older cards are "
-             "refused rather than run badly.";
-  return r;
-'@
-$newGpu = @'
+# RTX 20/30: keep upstream architecture detection, but make Turing/Ampere an
+# explicit experimental warning rather than a hard block.
+$gpuPattern = '  if \(gpu->arch == GpuArch::Ada \|\| gpu->arch == GpuArch::Blackwell\) \{\s*r\.state = ProbeState::Ok;\s*return r;\s*\}\s*r\.state = ProbeState::Fail;\s*r\.remedy = "RTX 40 \(Ada\) or RTX 50 \(Blackwell\) is required\. Older cards are "\s*"refused rather than run badly\.";\s*return r;'
+$gpuReplacement = @'
   if (gpu->arch == GpuArch::Ada || gpu->arch == GpuArch::Blackwell) {
     r.state = ProbeState::Ok;
     return r;
@@ -38,22 +35,11 @@ $newGpu = @'
   r.remedy = "An NVIDIA RTX 20, 30, 40 or 50 GPU is required.";
   return r;
 '@
-Replace-Exact 'src/manager/Probes.cpp' $oldGpu $newGpu
+Replace-Regex 'src/manager/Probes.cpp' $gpuPattern $gpuReplacement
 
-# 2) Windows 10 22H2: WGC CreateForWindow exists there. Treat build 19045 as
-# experimental rather than blocking it. Older Windows builds remain blocked.
-$oldWin = @'
-  r.detail = "Build " + std::to_string(info.dwBuildNumber);
-  if (info.dwBuildNumber >= 22000) {
-    r.state = ProbeState::Ok;
-    return r;
-  }
-  r.state = ProbeState::Fail;
-  r.remedy = "Windows 11 is required: the overlay depends on compositor "
-             "behaviour that Windows 10 does not provide.";
-  return r;
-'@
-$newWin = @'
+# Windows 10 22H2 build 19045: allow the manager to start in experimental mode.
+$winPattern = '  r\.detail = "Build " \+ std::to_string\(info\.dwBuildNumber\);\s*if \(info\.dwBuildNumber >= 22000\) \{\s*r\.state = ProbeState::Ok;\s*return r;\s*\}\s*r\.state = ProbeState::Fail;\s*r\.remedy = "Windows 11 is required: the overlay depends on compositor "\s*"behaviour that Windows 10 does not provide\.";\s*return r;'
+$winReplacement = @'
   r.detail = "Build " + std::to_string(info.dwBuildNumber);
   if (info.dwBuildNumber >= 22000) {
     r.state = ProbeState::Ok;
@@ -69,20 +55,15 @@ $newWin = @'
   r.remedy = "Windows 10 22H2 build 19045 or Windows 11 is required.";
   return r;
 '@
-Replace-Exact 'src/manager/Probes.cpp' $oldWin $newWin
+Replace-Regex 'src/manager/Probes.cpp' $winPattern $winReplacement
 
-# 3) Windows 10 compatibility: IsBorderRequired is newer than the base WGC API.
-# Only call it on builds that expose the property. Cursor capture remains disabled.
-$oldWgc = @'
-  s->impl_->session = s->impl_->pool.CreateCaptureSession(item);
-  s->impl_->session.IsCursorCaptureEnabled(false);   // WoW draws its own cursor
-  s->impl_->session.IsBorderRequired(false);         // no yellow capture border
-  return s;
-'@
-$newWgc = @'
-  s->impl_->session = s->impl_->pool.CreateCaptureSession(item);
-  s->impl_->session.IsCursorCaptureEnabled(false);   // WoW draws its own cursor
-
+# Windows 10 compatibility: the base WGC capture APIs exist, but
+# IsBorderRequired is newer. Only call it when the OS build is new enough.
+$wgcPath = 'src/common/capture/WgcSource.cpp'
+$wgc = Read-Text $wgcPath
+$needle = '  s->impl_->session.IsBorderRequired(false);         // no yellow capture border'
+if (-not $wgc.Contains($needle)) { throw "WGC patch anchor not found" }
+$guard = @'
   // IsBorderRequired is newer than CreateForWindow. Windows 10 22H2 can capture
   // the game, but must not be forced through a property its WGC session may not
   // implement. On newer builds keep the original no-border behaviour.
@@ -96,27 +77,24 @@ $newWgc = @'
       try { s->impl_->session.IsBorderRequired(false); } catch (...) {}
     }
   }
-  return s;
 '@
-Replace-Exact 'src/common/capture/WgcSource.cpp' $oldWgc $newWgc
+$wgc = $wgc.Replace($needle, $guard.TrimEnd())
+Write-Text $wgcPath $wgc
 
-# 4) Branding for the Webparatus edition, while retaining upstream licensing.
+# Branding for the Webparatus edition. The original MIT licence and third-party
+# notices are intentionally left untouched.
 foreach ($file in @('src/manager/main.cpp','src/runtime/main.cpp')) {
-  $full = Join-Path $SourceRoot $file
-  $text = [IO.File]::ReadAllText($full)
+  $text = Read-Text $file
   $text = $text.Replace('DLSS 5 Sidecar', 'Webparatus DLSS5 Sidecar V3')
-  [IO.File]::WriteAllText($full, $text, [Text.UTF8Encoding]::new($false))
-  Write-Host "Branded $file"
+  Write-Text $file $text
 }
 
-# Add edition identity to the manager's first-run text without removing the
-# upstream safety notice.
-$manager = Join-Path $SourceRoot 'src/manager/main.cpp'
-$text = [IO.File]::ReadAllText($manager)
-$anchor = 'constexpr const char* kFirstRunBody ='
-if ($text.Contains($anchor)) {
-  $text = $text.Replace($anchor, "// Webparatus edition by Klede Marcos Teixeira - YouTube: Webparatus`r`n" + $anchor)
-  [IO.File]::WriteAllText($manager, $text, [Text.UTF8Encoding]::new($false))
-}
+# Add edition identity in a visible first-run title while preserving the full
+# upstream safety notice below it.
+$managerPath = 'src/manager/main.cpp'
+$manager = Read-Text $managerPath
+$manager = $manager.Replace('constexpr const char* kFirstRunTitle = "Before you use this";',
+  'constexpr const char* kFirstRunTitle = "Webparatus V3 - Klede Marcos Teixeira";')
+Write-Text $managerPath $manager
 
 Write-Host 'Webparatus V3 patches applied successfully.' -ForegroundColor Green
