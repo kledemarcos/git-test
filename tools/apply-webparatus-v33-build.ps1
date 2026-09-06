@@ -23,7 +23,11 @@ PatchFile 'src/common/capture/WgcSource.cpp' {
 PatchFile 'src/common/present/DCompOverlay.cpp' {
   param($t)
   if (-not $t.Contains('#include "core/Log.h"')) {
-    $t = $t.Replace('#include "gpu/DeviceBridge.h"', "#include \"core/Log.h\"`n#include \"gpu/DeviceBridge.h\"")
+    $replacement = @'
+#include "core/Log.h"
+#include "gpu/DeviceBridge.h"
+'@
+    $t = $t.Replace('#include "gpu/DeviceBridge.h"', $replacement.TrimEnd())
   }
   return $t
 }
